@@ -1,0 +1,65 @@
+# Orca worktree hooks — shared ADE baseline
+# Setup: after new worktree created. Archive: before archive/remove.
+# Vars: $ORCA_ROOT_PATH $ORCA_WORKTREE_PATH $ORCA_WORKSPACE_NAME
+scripts:
+  setup: |
+    set -euo pipefail
+    echo "[orca setup] $ORCA_WORKSPACE_NAME @ $ORCA_WORKTREE_PATH"
+    # Eve / factory continuity pack (idempotent; no-op dirs ok)
+    mkdir -p "$ORCA_WORKTREE_PATH/.factory-memory"
+    for f in MEMORY.md last-handoff.md state.json PROMPT-PREAMBLE.md; do
+      if [ ! -f "$ORCA_WORKTREE_PATH/.factory-memory/$f" ]; then
+        if [ -f "$ORCA_ROOT_PATH/templates/factory-memory/$f" ]; then
+          cp "$ORCA_ROOT_PATH/templates/factory-memory/$f" "$ORCA_WORKTREE_PATH/.factory-memory/$f"
+        elif [ -f "$ORCA_ROOT_PATH/.ai/factory/templates/factory-memory/$f" ]; then
+          cp "$ORCA_ROOT_PATH/.ai/factory/templates/factory-memory/$f" "$ORCA_WORKTREE_PATH/.factory-memory/$f"
+        else
+          case "$f" in
+            MEMORY.md) printf '%s\n' "# MEMORY" "workspace: $ORCA_WORKSPACE_NAME" > "$ORCA_WORKTREE_PATH/.factory-memory/$f" ;;
+            last-handoff.md) printf '%s\n' "Status=INIT" "workspace=$ORCA_WORKSPACE_NAME" > "$ORCA_WORKTREE_PATH/.factory-memory/$f" ;;
+            state.json) printf '%s\n' '{}' > "$ORCA_WORKTREE_PATH/.factory-memory/$f" ;;
+            PROMPT-PREAMBLE.md) printf '%s\n' "# PREAMBLE" "Load .factory-memory before work. EXIT: close this terminal." > "$ORCA_WORKTREE_PATH/.factory-memory/$f" ;;
+          esac
+        fi
+      fi
+    done
+    # Shared venv symlink when root maintains one
+    if [ ! -e "$ORCA_WORKTREE_PATH/.venv" ] && [ -d "$ORCA_ROOT_PATH/.venv" ]; then
+      ln -sfn "$ORCA_ROOT_PATH/.venv" "$ORCA_WORKTREE_PATH/.venv"
+    fi
+    # Optional requirements sync only when both venv + requirements exist
+    if [ -x "$ORCA_ROOT_PATH/.venv/bin/pip" ] && [ -f "$ORCA_WORKTREE_PATH/requirements.txt" ]; then
+      "$ORCA_ROOT_PATH/.venv/bin/pip" install -r "$ORCA_WORKTREE_PATH/requirements.txt" \
+        -q --no-deps --no-build-isolation 2>/dev/null \
+        || "$ORCA_ROOT_PATH/.venv/bin/pip" install -r "$ORCA_WORKTREE_PATH/requirements.txt" -q || true
+    fi
+    # Optional env example copy (never overwrite secrets)
+    if [ -f "$ORCA_ROOT_PATH/.env.example" ] && [ ! -f "$ORCA_WORKTREE_PATH/.env.example" ]; then
+      cp "$ORCA_ROOT_PATH/.env.example" "$ORCA_WORKTREE_PATH/.env.example"
+    fi
+    echo "[orca setup] ready"
+
+  archive: |
+    set -euo pipefail
+    echo "[orca archive] $ORCA_WORKSPACE_NAME @ $ORCA_WORKTREE_PATH"
+    export PATH="/usr/bin:/bin:/usr/local/bin:${PATH:-}"
+    export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/data/opt/revive/orca_serve/state/factory/config}"
+    export ORCA_USER_DATA="${ORCA_USER_DATA:-/data/opt/revive/orca_serve/state/factory/config}"
+    export MTL_ENV_ID="${MTL_ENV_ID:-1522e07a-633a-4df5-8da0-f079198ef4d3}"
+    MTL="$MTL_ENV_ID"
+    CLOSE_PY=""
+    for c in \
+      "$ORCA_ROOT_PATH/scripts/orca-archive-close-terminals.py" \
+      "$ORCA_WORKTREE_PATH/scripts/orca-archive-close-terminals.py"
+    do
+      if [ -f "$c" ]; then CLOSE_PY="$c"; break; fi
+    done
+    if command -v orca >/dev/null 2>&1 && [ -n "$CLOSE_PY" ]; then
+      orca terminal list --environment "$MTL" --json 2>/dev/null \
+        | ORCA_WORKTREE_PATH="$ORCA_WORKTREE_PATH" MTL_ENV_ID="$MTL" python3 "$CLOSE_PY" || true
+    else
+      echo "[orca archive] skip terminal close (no orca or helper)"
+    fi
+    # Light residue only — do not rm the worktree here
+    find "$ORCA_WORKTREE_PATH" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+    echo "[orca archive] done"
